@@ -169,6 +169,8 @@ def io_handler(mode, result=None):
             joint_names=np.array(G1_JOINT_NAMES),
             target_positions=result.get('target_positions'),
             errors=result.get('errors'),
+            pelvis_positions=result['pelvis_positions'],  # (T, 3)
+            yaw_angles=result['yaw_angles'],               # (T,)
         )
         logger.info(f"[io_handler] 结果已保存: {OUTPUT_NPZ}")
 
@@ -220,6 +222,7 @@ def align_coordinates(pose_3d):
     # 正确情况: H3.6M: Y+ = 上, 变换矩阵 R_CORRECT = [[1,0,0],[0,0,-1],[0,1,0]]
     # 变换规则: H3.6M (x, y, z) -> MuJoCo (x, -z, -y)
     pose_temp = (R_Y_TO_Z @ pose_3d.T).T  # (17, 3)
+    pelvis_world = pose_temp[H36M_IDX['pelvis']].copy()
     logger.debug(f"  步骤1 Y->Z 旋转完成: pelvis={pose_temp[0]}")
 
     # 步骤 2: 提取正面方向
@@ -274,7 +277,7 @@ def align_coordinates(pose_3d):
     pose_aligned = pose_aligned - pelvis_aligned
     logger.debug(f"  原点移到骨盆: pelvis={pose_aligned[0]}")
 
-    return pose_aligned, R_align
+    return pose_aligned, R_align, pelvis_world, angle
 
 
 def compute_reference_angles(pose_aligned):
@@ -653,6 +656,8 @@ def process(pose_data, model, data):
     all_joint_angles = []
     all_target_positions = []
     all_errors = []
+    all_pelvis_positions = []  # 骨盆世界位置
+    all_yaw_angles = []        # 身体朝向角
 
     prev_angles = None  # 上一帧的关节角度，用于防突变
 
@@ -663,7 +668,7 @@ def process(pose_data, model, data):
 
         # 2. 坐标系对齐
         pose_3d = pose_smoothed[frame_idx]
-        pose_aligned, R_align = align_coordinates(pose_3d)
+        pose_aligned, R_align, pelvis_world, yaw_angle = align_coordinates(pose_3d)
 
         # 3. 构建目标位置（全关节）
         targets = build_targets(pose_aligned, model, data)
@@ -675,6 +680,8 @@ def process(pose_data, model, data):
         all_joint_angles.append(joint_angles)
         all_target_positions.append(targets)
         all_errors.append(error)
+        all_pelvis_positions.append(pelvis_world)
+        all_yaw_angles.append(yaw_angle)
 
         # 更新上一帧角度
         prev_angles = joint_angles.copy()
@@ -692,8 +699,19 @@ def process(pose_data, model, data):
     logger.info(f"\n处理完成: {n_frames} 帧, {elapsed:.1f}s")
 
     # 6. 输出平滑
+    from scipy.signal import savgol_filter
     joint_angles_raw = np.array(all_joint_angles)
     joint_angles_smooth = smooth_joint_angles(joint_angles_raw, window=7, polyorder=3)
+
+    # 平滑骨盆位置（按轴独立）
+    pelvis_positions_raw = np.array(all_pelvis_positions)  # (T, 3)
+    pelvis_positions_smooth = np.zeros_like(pelvis_positions_raw)
+    for axis in range(3):
+        pelvis_positions_smooth[:, axis] = savgol_filter(pelvis_positions_raw[:, axis], 7, 3)
+
+    # 平滑 yaw 角（先 unwrap 避免 ±π 边界跳变）
+    yaw_angles_raw = np.array(all_yaw_angles)  # (T,)
+    yaw_angles_smooth = savgol_filter(np.unwrap(yaw_angles_raw), 7, 3)
 
     # 统计误差
     errors = np.array(all_errors)
@@ -705,6 +723,10 @@ def process(pose_data, model, data):
         'target_positions': all_target_positions,         # list of dict
         'errors': errors,                                 # (T,)
         'pose_data': pose_data,                           # (T, 17, 3) 原始数据
+        'pelvis_positions': pelvis_positions_smooth,      # (T, 3) 平滑后
+        'pelvis_positions_raw': pelvis_positions_raw,     # (T, 3) 原始
+        'yaw_angles': yaw_angles_smooth,                  # (T,) 平滑后, 弧度
+        'yaw_angles_raw': yaw_angles_raw,                 # (T,) 原始
     }
 
     return result
@@ -765,7 +787,7 @@ def visualize(result, model, data):
 
         # 左面板: 原始 H3.6M 骨架
         pose_3d = result['pose_data'][frame_idx]
-        pose_aligned, _ = align_coordinates(pose_3d)
+        pose_aligned, _, _, _ = align_coordinates(pose_3d)
 
         # 绘制 H3.6M 骨架
         for i, j in H36M_SKELETON:
