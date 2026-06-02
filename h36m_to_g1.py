@@ -626,6 +626,98 @@ def smooth_joint_angles(joint_angles, window=5, polyorder=2):
     return angles_smoothed
 
 
+def estimate_pelvis_trajectory(pose_data):
+    """从 3D 脚部坐标估计骨盆移动轨迹
+
+    原理:
+      VideoPose3D 输出的 3D 坐标以骨盆为原点，骨盆始终在 (0,0,0)。
+      但脚部相对骨盆的位置变化反映了骨盆在世界空间中的移动:
+      - 当支撑脚（接触地面的脚）在骨架坐标系中向后移动时，
+        说明骨盆在世界空间中向前移动了。
+
+    算法:
+      1. 检测支撑脚: 速度较低且位置较低的脚为支撑脚
+      2. 支撑脚的位移（骨架坐标系）取反 = 骨盆位移（世界坐标系）
+      3. 累积得到骨盆轨迹
+
+    Args:
+        pose_data: (T, 17, 3) H3.6M 格式（未对齐的原始坐标）
+
+    Returns:
+        trajectory: (T, 3) 骨盆在 H3.6M 坐标系中的世界位置
+    """
+    from scipy.signal import savgol_filter
+
+    T = len(pose_data)
+    l_ankle_idx = H36M_IDX['l_ankle']
+    r_ankle_idx = H36M_IDX['r_ankle']
+
+    # 平滑脚部坐标
+    ankles = np.zeros((T, 2, 3))
+    for foot in range(2):
+        idx = l_ankle_idx if foot == 0 else r_ankle_idx
+        for d in range(3):
+            ankles[:, foot, d] = savgol_filter(pose_data[:, idx, d], 7, 3)
+
+    # 计算每帧每只脚的速度和高度
+    ankle_vel = np.zeros((T, 2))
+    for foot in range(2):
+        diff = np.diff(ankles[:, foot, :], axis=0)
+        ankle_vel[1:, foot] = np.linalg.norm(diff, axis=1)
+    ankle_vel[0] = ankle_vel[1]
+
+    # Y 坐标越小 = 越低（H3.6M 中 Y- 向上）
+    ankle_height = ankles[:, :, 1]  # (T, 2)
+
+    # 检测支撑脚: 速度较低 且 位置较低
+    # 使用滑动窗口自适应阈值
+    window = 15
+    stance = np.zeros(T, dtype=int)  # 0=左脚, 1=右脚
+    for t in range(T):
+        t_start = max(0, t - window // 2)
+        t_end = min(T, t + window // 2 + 1)
+        vel_local = ankle_vel[t_start:t_end]
+        vel_thresh = max(np.median(vel_local) * 1.5, 0.005)
+
+        l_stance = ankle_vel[t, 0] < vel_thresh
+        r_stance = ankle_vel[t, 1] < vel_thresh
+
+        if l_stance and r_stance:
+            # 双脚支撑: 选更低的脚
+            stance[t] = 0 if ankle_height[t, 0] <= ankle_height[t, 1] else 1
+        elif l_stance:
+            stance[t] = 0
+        elif r_stance:
+            stance[t] = 1
+        else:
+            # 无支撑（跳跃等）: 用上一帧
+            stance[t] = stance[t - 1] if t > 0 else 0
+
+    # 从支撑脚位移估计骨盆轨迹
+    # 核心: 支撑脚在骨架坐标系中移动了多少，骨盆在世界空间中就移动了相反的量
+    trajectory = np.zeros((T, 3))
+    for t in range(1, T):
+        foot = stance[t]
+        prev_foot = stance[t - 1]
+
+        if foot == prev_foot:
+            # 同一只脚在支撑: 脚的位移取反 = 骨盆位移
+            foot_displacement = ankles[t, foot] - ankles[t - 1, foot]
+            trajectory[t] = trajectory[t - 1] - foot_displacement
+        else:
+            # 换脚支撑: 用换脚前后的脚位置差来估计
+            # 换脚瞬间位移较小，直接继承
+            trajectory[t] = trajectory[t - 1]
+
+    logger.info(f"[estimate_pelvis_trajectory] 轨迹估计完成")
+    logger.info(f"  支撑脚分布: 左脚={np.sum(stance == 0)}帧, 右脚={np.sum(stance == 1)}帧")
+    logger.info(f"  轨迹范围: X=[{trajectory[:, 0].min():.3f}, {trajectory[:, 0].max():.3f}]"
+                f" Y=[{trajectory[:, 1].min():.3f}, {trajectory[:, 1].max():.3f}]"
+                f" Z=[{trajectory[:, 2].min():.3f}, {trajectory[:, 2].max():.3f}]")
+
+    return trajectory
+
+
 def process(pose_data, model, data):
     """核心处理函数: 坐标对齐 + IK 求解
 
@@ -649,6 +741,9 @@ def process(pose_data, model, data):
     # 1. 输入平滑
     pose_smoothed = smooth_poses(pose_data, window=7, polyorder=3)
 
+    # 1.5 从脚部坐标估计骨盆移动轨迹（H3.6M 坐标系）
+    trajectory_h36m = estimate_pelvis_trajectory(pose_smoothed)
+
     n_frames = len(pose_smoothed)
     logger.info(f"总帧数: {n_frames}")
 
@@ -668,7 +763,10 @@ def process(pose_data, model, data):
 
         # 2. 坐标系对齐
         pose_3d = pose_smoothed[frame_idx]
-        pose_aligned, R_align, pelvis_world, yaw_angle = align_coordinates(pose_3d)
+        pose_aligned, R_align, _, yaw_angle = align_coordinates(pose_3d)
+
+        # 用估计的轨迹替代原始骨盆位置（用固定的 Y->Z 旋转转换到 MuJoCo 坐标系）
+        pelvis_world = R_Y_TO_Z @ trajectory_h36m[frame_idx]
 
         # 3. 构建目标位置（全关节）
         targets = build_targets(pose_aligned, model, data)

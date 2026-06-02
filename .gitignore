@@ -26,3 +26,5 @@
 /__pycache__
 /测试.zip
 /要求.md
+*.mp4
+*.npz
