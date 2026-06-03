@@ -3,9 +3,6 @@ H3.6M 骨架到 Unitree G1 关节角映射脚本
 
 功能: 将 VideoPose3D 输出的 H3.6M 3D 骨架坐标映射到 G1 机器人的 29 个关节角
 
-注意: 由于模型训练错误，H3.6M 中 Y 负方向才是向上
-      正确情况应该是 Y+ 向上
-
 坐标系变换:
   1. H3.6M (Y- up) -> MuJoCo (Z+ up): R_Y_TO_Z = [[1,0,0],[0,0,1],[0,-1,0]]
   2. 正面方向对齐: f_infer = up_vec × shoulder_vec -> X+
@@ -107,11 +104,7 @@ IK_GAIN = 0.5
 IK_DAMPING = 1e-6
 MAX_ITERATIONS = 100
 
-# 坐标系变换矩阵: H3.6M (Y- up, 训练错误) -> MuJoCo (Z+ up)
-# 注意: 由于模型训练错误，H3.6M 中 Y 负方向才是向上
-# 正确应该是 Y+ 向上，变换矩阵为:
-# R_CORRECT = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64)
-#
+# 坐标系变换矩阵: H3.6M (Y- up) -> MuJoCo (Z+ up)
 # 变换规则:
 #   H3.6M (x, y, z) -> MuJoCo (x, -z, -y)
 #   H3.6M Y- (up) -> MuJoCo Z+ (up)
@@ -141,8 +134,6 @@ def io_handler(mode, result=None):
     mode="read":        读取 INPUT_NPZ, 返回 poses_3d (T, 17, 3)
     mode="write":       将 result dict 保存为 OUTPUT_NPZ
     mode="load_model":  加载 MuJoCo 模型, 返回 (model, data)
-
-    注意: 由于模型训练错误，H3.6M 中 Y 负方向才是向上
 
     正面方向计算 (右手定则):
     - shoulder_vec = l_shoulder - r_shoulder (从右肩指向左肩)
@@ -196,12 +187,9 @@ def align_coordinates(pose_3d):
     """坐标系对齐: H3.6M (Y- up, 训练错误) -> MuJoCo (Z+ up, X+ forward)
 
     步骤:
-    1. Y- -> Z+ 旋转 (由于训练错误，H3.6M 中 Y 负方向才是向上)
+    1. Y- -> Z+ 旋转
     2. 提取正面方向
     3. 旋转到 MuJoCo X+
-
-    正确情况应该是 Y+ 向上，变换矩阵为:
-    R_CORRECT = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64)
 
     正面方向计算 (右手定则):
     - shoulder_vec = l_shoulder - r_shoulder (从右肩指向左肩)
@@ -218,8 +206,7 @@ def align_coordinates(pose_3d):
     logger.debug("[align_coordinates] 开始坐标系对齐")
 
     # 步骤 1: Y- -> Z+ 旋转
-    # H3.6M: Y- = 上 (训练错误), MuJoCo: Z+ = 上
-    # 正确情况: H3.6M: Y+ = 上, 变换矩阵 R_CORRECT = [[1,0,0],[0,0,-1],[0,1,0]]
+    # H3.6M: Y- = 上, MuJoCo: Z+ = 上
     # 变换规则: H3.6M (x, y, z) -> MuJoCo (x, -z, -y)
     pose_temp = (R_Y_TO_Z @ pose_3d.T).T  # (17, 3)
     pelvis_world = pose_temp[H36M_IDX['pelvis']].copy()
@@ -288,8 +275,6 @@ def compute_reference_angles(pose_aligned):
     弯曲角度 = π - 向量夹角:
     - 站立时: 向量夹角 ≈ 180°, 弯曲角度 ≈ 0°
     - 弯曲时: 向量夹角 < 180°, 弯曲角度 > 0°
-
-    注意: 由于模型训练错误，H3.6M 中 Y 负方向才是向上
 
     Args:
         pose_aligned: (17, 3) 对齐后的坐标
@@ -1002,8 +987,6 @@ def visualize(result, model, data):
 def main():
     """主函数: 读取数据 -> 处理 -> 可视化
 
-    注意: 由于模型训练错误，H3.6M 中 Y 负方向才是向上
-
     正面方向计算 (右手定则):
     - shoulder_vec = l_shoulder - r_shoulder (从右肩指向左肩)
     - up_vec = neck - pelvis (从骨盆指向颈部)
@@ -1032,9 +1015,5 @@ def main():
 
 
 if __name__ == '__main__':
-    # 注意: 由于模型训练错误，H3.6M 中 Y 负方向才是向上
-    # 正面方向计算 (右手定则):
-    # - shoulder_vec = l_shoulder - r_shoulder (从右肩指向左肩)
-    # - up_vec = neck - pelvis (从骨盆指向颈部)
-    # - f_infer = up_vec × shoulder_vec (得到 X+ 方向)
+
     main()

@@ -3,7 +3,7 @@
 /g1_mapping_result.mp4
 /kaggle.md
 /mapping_debug.log
-/taiji.mp4
+
 /taiji.npz
 /taiji_result.mp4
 /tennis.mp4
@@ -26,5 +26,5 @@
 /__pycache__
 /测试.zip
 /要求.md
-*.mp4
+
 *.npz

@@ -32,8 +32,8 @@ DEBUG = '--debug' in sys.argv
 # 全局路径配置
 # ============================================================================
 VIDEO_PATH = "taiji.mp4"                          # 输入视频路径
-MEDIAPIPE_MODEL = "pose_landmarker_heavy.task"     # MediaPipe 模型路径
-ONNX_MODEL = "videopose3d_finetuned_v3.onnx"           # VideoPose3D ONNX 模型路径 (微调V3: 预训练+全架构)
+MEDIAPIPE_MODEL = "model\pose_landmarker_heavy.task"     # MediaPipe 模型路径
+ONNX_MODEL = "model\videopose3d_finetuned_v3.onnx"           # VideoPose3D ONNX 模型路径 (微调V3: 预训练+全架构)
 OUTPUT_NPZ = "taiji.npz"                         # 输出 .npz 文件路径
 OUTPUT_VIDEO = "taiji_result.mp4"                      # 输出可视化视频路径
 RECEPTIVE_FIELD = 243                                   # 模型感受野 (微调V3, filter_widths=[3,3,3,3,3])
